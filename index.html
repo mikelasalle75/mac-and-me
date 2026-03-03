@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MAC AND ME: A Text Adventure</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a1a;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:'VT323',monospace;color:#00ff41}
+.monitor-shell{background:#2a2a2a;border-radius:24px;padding:28px 28px 20px;box-shadow:0 0 80px rgba(0,0,0,0.9),inset 0 2px 4px rgba(255,255,255,0.05);width:860px;max-width:98vw}
+.monitor-label{text-align:center;color:#555;font-size:0.65rem;letter-spacing:.4rem;margin-bottom:10px;font-family:Arial,sans-serif;text-transform:uppercase}
+.crt{background:#050e05;border-radius:12px;border:3px solid #111;position:relative;overflow:hidden;box-shadow:inset 0 0 60px rgba(0,0,0,0.8),0 0 30px rgba(0,255,65,0.04)}
+.crt::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.18) 2px,rgba(0,0,0,0.18) 4px);pointer-events:none;z-index:20}
+.crt::after{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 50%,transparent 55%,rgba(0,0,0,0.5) 100%);pointer-events:none;z-index:21}
+.screen{padding:18px 22px;position:relative;z-index:1}
+.dos-bar{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #003800;padding-bottom:8px;margin-bottom:10px;font-size:1rem;color:#00cc33;letter-spacing:.05rem}
+#output{height:420px;overflow-y:auto;font-size:1.25rem;line-height:1.65;padding-right:6px;scroll-behavior:smooth}
+#output::-webkit-scrollbar{width:5px}
+#output::-webkit-scrollbar-track{background:transparent}
+#output::-webkit-scrollbar-thumb{background:#003800}
+.ln{display:block;word-break:break-word}
+.ln-echo{color:#006600}
+.ln-info{color:#88ff88}
+.ln-warn{color:#ffff55}
+.ln-err{color:#ff5555}
+.ln-dim{color:#336633}
+.ln-sep{color:#003800}
+.ln-head{color:#00ff41;font-size:1.5rem;text-align:center;letter-spacing:.3rem}
+.input-row{display:flex;align-items:center;border-top:1px solid #003800;padding-top:10px;margin-top:10px;gap:8px;font-size:1.25rem}
+.prompt-sym{color:#00ff41;flex-shrink:0}
+#cmd{flex:1;background:transparent;border:none;outline:none;color:#00ff41;font-family:'VT323',monospace;font-size:1.25rem;caret-color:#00ff41}
+.statusbar{display:flex;justify-content:space-between;margin-top:8px;font-size:.95rem;color:#336633;padding:0 2px}
+@keyframes flicker{0%,94%,96%,100%{opacity:1}95%{opacity:.88}97%{opacity:.95}}
+.crt{animation:flicker 9s infinite}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+</style>
+</head>
+<body>
+<div class="monitor-shell">
+  <div class="monitor-label">TANDY 1000 · 640K RAM · MS-DOS 3.3</div>
+  <div class="crt">
+    <div class="screen">
+      <div class="dos-bar">
+        <span>C:\GAMES\MACANDME&gt; MACANDME.EXE</span>
+        <span>[ ? = HELP ]</span>
+      </div>
+      <div id="output"></div>
+      <div class="input-row">
+        <span class="prompt-sym">&gt;</span>
+        <input id="cmd" type="text" autocomplete="off" spellcheck="false" maxlength="120" autofocus placeholder="type a command...">
+      </div>
+      <div class="statusbar">
+        <span id="s-loc">LOC: ---</span>
+        <span id="s-energy">ENERGY: ██████████ 100%</span>
+        <span id="s-score">SCORE: 0</span>
+        <span id="s-moves">MOVES: 0</span>
+      </div>
+    </div>
+  </div>
+  <div class="monitor-label" style="margin-top:10px">● POWER &nbsp;&nbsp; ◉ BRIGHTNESS</div>
+</div>
+
+<script>
+// ================================================================
+//  MAC AND ME: A TEXT ADVENTURE
+//  Based on the 1988 film that definitely exists and is definitely
+//  a real movie and not a 93-minute McDonald's commercial.
+// ================================================================
+
+const out = document.getElementById('output');
+const cmdEl = document.getElementById('cmd');
+
+function pr(text, cls=''){
+  const s = document.createElement('span');
+  s.className = 'ln' + (cls ? ' ln-'+cls : '');
+  s.textContent = text;
+  out.appendChild(s);
+  out.appendChild(document.createElement('br'));
+  out.scrollTop = out.scrollHeight;
+}
+function blank(){ out.appendChild(document.createElement('br')); }
+function sep(){ pr('────────────────────────────────────────────────────','sep'); }
+function echo(t){ pr('> ' + t, 'echo'); }
+
+// ── GAME STATE ────────────────────────────────────────────────
+const G = {
+  room:'crash_site', inv:[], flags:{},
+  energy:100, score:0, moves:0,
+  over:false, won:false
+};
+
+function addScore(n){ G.score+=n; updateHUD(); }
+
+function energize(n, msg){
+  G.energy = Math.min(100, G.energy+n);
+  if(msg) pr(msg,'info');
+  updateHUD();
+}
+
+function drain(n=5){
+  G.energy = Math.max(0, G.energy-n);
+  if(G.energy<=0){
+    gameOver('Your energy hits zero. You collapse in a heap on the floor.\nA nearby human nudges you with their foot. "Is this normal?"\nIt is not normal. Drink Coca-Cola next time.');
+  } else if(G.energy<=15){
+    pr('[CRITICAL: ENERGY DANGEROUSLY LOW — drink Coca-Cola NOW]','err');
+  } else if(G.energy<=35){
+    pr('[WARNING: Energy low — find Coca-Cola soon]','warn');
+  }
+  updateHUD();
+}
+
+function updateHUD(){
+  document.getElementById('s-loc').textContent = 'LOC: '+(rooms[G.room]?.short||'?');
+  const b = Math.round(G.energy/10);
+  document.getElementById('s-energy').textContent =
+    'ENERGY: '+'█'.repeat(b)+'░'.repeat(10-b)+' '+G.energy+'%';
+  document.getElementById('s-score').textContent = 'SCORE: '+G.score;
+  document.getElementById('s-moves').textContent = 'MOVES: '+G.moves;
+}
+
+// ── ROOMS ─────────────────────────────────────────────────────
+const rooms = {
+  crash_site:{
+    short:'CRASH SITE',
+    name:'Mojave Desert — Crash Site',
+    desc:[
+      'The Mojave Desert. Your family spacecraft has landed with the aerodynamic grace of a wet sock.',
+      'Smoke, debris, and the faint scent of government inevitability fill the air.',
+      'A scorched pamphlet reads: "WHAT TO DO IF ALIENS EXIST (they don\'t): Call 1-800-NO-ALIENS."',
+      'Your family was here a moment ago. Now they are gone. Classic.',
+      'Something glints in the wreckage to the EAST. A road stretches NORTH.'
+    ],
+    exits:{north:'desert_road', east:'crash_debris'},
+    items:['coke1'], npcs:[]
+  },
+  crash_debris:{
+    short:'WRECKAGE',
+    name:'Spacecraft Wreckage — Interior Debris',
+    desc:[
+      'The gutted interior of your family\'s ship. It smells like ozone and poor navigation choices.',
+      'Twisted alien metal everywhere. Your nose glows softly in the dim light.',
+      'The ship\'s COMMUNICATOR unit appears to be salvageable — barely.',
+      'WEST returns to the open desert.'
+    ],
+    exits:{west:'crash_site'},
+    items:['communicator','alien_doc'], npcs:[]
+  },
+  desert_road:{
+    short:'HIGHWAY',
+    name:'Desert Highway 15',
+    desc:[
+      'A sun-baked two-lane road through the Mojave.',
+      'A rusted sign: "GROVER\'S MILL — 3 MILES — Future Home of McDonald\'s®"',
+      'A drainage DITCH runs alongside to the WEST.',
+      'The suburb is NORTH. The crash site is SOUTH.'
+    ],
+    exits:{north:'suburb_street', south:'crash_site', west:'drain_ditch'},
+    items:['vacuum_hose'], npcs:[]
+  },
+  drain_ditch:{
+    short:'DITCH',
+    name:'Roadside Drainage Ditch',
+    desc:[
+      'A concrete drainage channel, bone dry except for a suspicious residue of Coca-Cola.',
+      'There\'s a pipe here that leads UNDERGROUND. Just big enough for a determined alien.',
+      'EAST returns to the highway.'
+    ],
+    exits:{east:'desert_road', underground:'storm_drain'},
+    items:['coke2'], npcs:[]
+  },
+  storm_drain:{
+    short:'STORM DRAIN',
+    name:'Storm Drain Tunnels',
+    desc:[
+      'Dark concrete tunnels beneath the suburb. Echoey. Slightly damp.',
+      'You can hear children playing somewhere above.',
+      'EAST leads toward a drain outlet. UP brings you back to the ditch.'
+    ],
+    exits:{east:'drain_outlet', up:'drain_ditch'},
+    items:[], npcs:[]
+  },
+  drain_outlet:{
+    short:'DRAIN OUTLET',
+    name:'Drain Outlet — Behind the Park',
+    desc:[
+      'The tunnel opens to sunlight. You can CLIMB UP into a neighborhood park.',
+      'WEST continues back through the tunnels.'
+    ],
+    exits:{up:'park', west:'storm_drain'},
+    items:[], npcs:[]
+  },
+  park:{
+    short:'PARK',
+    name:'Grover\'s Mill Neighborhood Park',
+    desc:[
+      'A pleasant suburban park. Picnic tables. Fountain. An improbable number of Coca-Cola vending machines.',
+      'A BOY IN A WHEELCHAIR is here, careening around at alarming speed.',
+      'NORTH leads to Maple Street. EAST is the picnic area. SOUTH returns to the drain outlet.'
+    ],
+    exits:{north:'suburb_street', east:'picnic_area', south:'drain_outlet'},
+    items:['alien_grass'], npcs:['eric']
+  },
+  picnic_area:{
+    short:'PICNIC AREA',
+    name:'Park Picnic Area',
+    desc:[
+      'Wooden tables under oak trees. A spread of McDonald\'s food sits here, untouched.',
+      'The food gleams with an almost supernatural perfection. Like a product placement in a film.',
+      'A vending machine hums cheerfully in the corner.',
+      'WEST returns to the main park.'
+    ],
+    exits:{west:'park'},
+    items:['coke3','mcdonalds_bag'], npcs:[]
+  },
+  suburb_street:{
+    short:'MAPLE STREET',
+    name:'Maple Street',
+    desc:[
+      'Picture-perfect suburbia. White fences. Sprinklers. Minivans. Radical normalcy.',
+      'A BLACK VAN idles at the corner. The driver is definitely not watching you.',
+      'SOUTH is the park. EAST is the Webber house. NORTH goes to McDonald\'s.',
+      'The van is parked to the NORTHEAST.'
+    ],
+    exits:{south:'park', east:'webber_yard', north:'mcdonalds_lot', northeast:'gov_van'},
+    items:[], npcs:['agent_henderson']
+  },
+  gov_van:{
+    short:'GOV VAN',
+    name:'Suspicious Black Government Van — Interior',
+    desc:[
+      'The van smells like bad coffee, broken dreams, and surveillance.',
+      'Equipment covers every surface. Radar. Oscilloscopes. A Burger King bag.',
+      'A badge on the seat reads: "DR. WICKETT — GOV. ALIEN INVESTIGATION UNIT."',
+      'Files everywhere. One folder: "PROJECT: RUBBERSUIT" in red.',
+      'Exit is SOUTHWEST.'
+    ],
+    exits:{southwest:'suburb_street'},
+    items:['gov_badge','facility_map'], npcs:[]
+  },
+  webber_yard:{
+    short:'WEBBER YARD',
+    name:'Webber Family Front Yard',
+    desc:[
+      'A tidy yard with a WHEELCHAIR RAMP installed without comment.',
+      'A SPRINKLER oscillates like it\'s trying to signal distress.',
+      'EAST is the front door. WEST returns to the street.'
+    ],
+    exits:{east:'webber_living', west:'suburb_street'},
+    items:[], npcs:[]
+  },
+  webber_living:{
+    short:'LIVING ROOM',
+    name:'Webber Living Room',
+    desc:[
+      'A cozy American living room. Family photos on every wall — suspiciously none feature aliens.',
+      'A TV plays a documentary about vacuum cleaners. The sofa is large and lumpy.',
+      'A RUBBER PLANT sits in the corner, enormous and inviting.',
+      'KITCHEN is NORTH. GARAGE is WEST. Front yard is EAST.'
+    ],
+    exits:{north:'webber_kitchen', west:'webber_garage', east:'webber_yard'},
+    items:['rubber_plant'], npcs:['janet']
+  },
+  webber_kitchen:{
+    short:'KITCHEN',
+    name:'Webber Family Kitchen',
+    desc:[
+      'A sunny kitchen that is ENTIRELY STOCKED WITH COCA-COLA.',
+      'Every cabinet. Every shelf. The refrigerator has a Coca-Cola logo on it.',
+      'For a human: concerning. For you: paradise.',
+      'SOUTH returns to the living room. EAST is the backyard door.'
+    ],
+    exits:{south:'webber_living', east:'webber_back'},
+    items:['coke4','coke5'], npcs:[]
+  },
+  webber_garage:{
+    short:'GARAGE',
+    name:'Webber Family Garage',
+    desc:[
+      'A garage full of things people buy and never use.',
+      'A VACUUM CLEANER sits in the corner. You eye it with complicated feelings.',
+      'EAST returns to the living room.'
+    ],
+    exits:{east:'webber_living'},
+    items:['vacuum_cleaner','coke6'], npcs:[]
+  },
+  webber_back:{
+    short:'BACKYARD',
+    name:'Webber Family Backyard',
+    desc:[
+      'A spacious backyard with a creaking swing set. A DOG is here.',
+      'The dog stares at you with the expression of someone who has seen things and processed them.',
+      'WEST is the kitchen. SOUTH leads toward the park.'
+    ],
+    exits:{west:'webber_kitchen', south:'park'},
+    items:[], npcs:['dog']
+  },
+  mcdonalds_lot:{
+    short:"McDONALD'S LOT",
+    name:"McDonald's® — Parking Lot",
+    desc:[
+      "THE McDonald's. Golden Arches blazing like a corporate sunrise.",
+      "Happy birthday banners hang in every window. A party is HAPPENING in there.",
+      "Half the parking lot is government vehicles. The unmarked kind, wink wink.",
+      "SOUTH returns to Maple Street. NORTH goes inside."
+    ],
+    exits:{south:'suburb_street', north:'mcdonalds_inside'},
+    items:['mcdonalds_hat'], npcs:[]
+  },
+  mcdonalds_inside:{
+    short:"McDONALD'S",
+    name:"McDonald's® — Interior",
+    desc:[
+      "Oh. OH. There's a birthday party happening and it has GOTTEN OUT OF HAND.",
+      "The ENTIRE restaurant has erupted into a synchronized dance number.",
+      "Employees, customers, toddlers, and at least one Ronald McDonald are all dancing.",
+      "Nobody has noticed an alien has walked in. Nobody notices anything here.",
+      "KITCHEN is EAST. PARTY ROOM is NORTH. Back OUTSIDE is SOUTH."
+    ],
+    exits:{south:'mcdonalds_lot', east:'mcdonalds_kitchen', north:'party_room'},
+    items:[], npcs:['ronald','crowd']
+  },
+  party_room:{
+    short:'PARTY ROOM',
+    name:"McDonald's® — Birthday Party Room",
+    desc:[
+      "A party room wallpapered in Ronald McDonald imagery. It's a lot.",
+      "A cake reads HAPPY BIRTHDAY DEBBIE! Debbie is presumably dancing.",
+      "On the table: an UNOPENED PRESENT tagged 'To: Whoever needs this most.'",
+      "SOUTH back to the restaurant floor."
+    ],
+    exits:{south:'mcdonalds_inside'},
+    items:['mystery_present'], npcs:[]
+  },
+  mcdonalds_kitchen:{
+    short:'McDONALD\'S KITCH.',
+    name:"McDonald's® — Kitchen",
+    desc:[
+      "The kitchen. Fry oil, burger aroma, fryer screaming.",
+      "Nobody notices you. They're all dancing.",
+      "BACK DOOR leads EAST to an alley. Restaurant floor is WEST."
+    ],
+    exits:{west:'mcdonalds_inside', east:'alley'},
+    items:['coke7'], npcs:[]
+  },
+  alley:{
+    short:'ALLEY',
+    name:"Back Alley Behind McDonald's",
+    desc:[
+      "A dim alley. Dumpsters, a cat, more government vehicles.",
+      "A chain link FENCE to the NORTH separates this from the government facility grounds.",
+      "McDonald's kitchen door is WEST."
+    ],
+    exits:{west:'mcdonalds_kitchen', north:'facility_ext'},
+    items:[], npcs:[]
+  },
+  facility_ext:{
+    short:'FACILITY EXTERIOR',
+    name:'Government Alien Research Facility — Exterior',
+    desc:[
+      "A featureless concrete building. No signage. Nothing to see here.",
+      "The outline of removed letters above the entrance still spells out something incriminating.",
+      "A GUARD checks badges at the main entrance to the NORTH.",
+      "The alley is SOUTH."
+    ],
+    exits:{south:'alley', north:'facility_lobby'},
+    items:[], npcs:['guard']
+  },
+  facility_lobby:{
+    short:'FAC. LOBBY',
+    name:'Government Facility — Lobby',
+    desc:[
+      "Cold, sterile. Fluorescent lights flicker ominously.",
+      "Wall posters: 'ALIEN CONTACT: NOT ON MY WATCH' and 'THERE IS NO PLANET B (that we know of).'",
+      "ELEVATOR goes UP to the lab. Stairwell is EAST. Exit is SOUTH."
+    ],
+    exits:{south:'facility_ext', up:'facility_lab', east:'stairwell'},
+    items:[], npcs:['receptionist']
+  },
+  stairwell:{
+    short:'STAIRWELL',
+    name:'Emergency Stairwell',
+    desc:[
+      "Concrete stairs. Emergency lighting. The smell of anxious government employees.",
+      "DOWN leads to the BASEMENT. UP returns to the LOBBY."
+    ],
+    exits:{up:'facility_lobby', down:'basement'},
+    items:[], npcs:[]
+  },
+  facility_lab:{
+    short:'RESEARCH LAB',
+    name:'Research Laboratory — Floor 2',
+    desc:[
+      "A cluttered lab full of equipment definitely NOT studying aliens.",
+      "Charts: 'ALIEN DIETARY REQUIREMENTS (COCA-COLA?!)' and 'RUBBER SUIT OR ACTUAL SKIN???'",
+      "A SCIENTIST is working furiously at a desk.",
+      "East door marked RESTRICTED leads to the holding area. DOWN is the elevator."
+    ],
+    exits:{down:'facility_lobby', east:'holding_area'},
+    items:['lab_notes'], npcs:['wickett']
+  },
+  holding_area:{
+    short:'HOLDING AREA',
+    name:'Alien Holding Area',
+    desc:[
+      "A large room. Three holding cells behind reinforced glass.",
+      "And there they are. YOUR FAMILY.",
+      "Your parents and siblings, sitting in matching cells with matching looks of disappointment.",
+      "Your mother's nose-glow communicates: 'We TOLD you about the airlock.'",
+      "A CONTROL PANEL on the wall has cell release controls. Lab is WEST. Exit is NORTH."
+    ],
+    exits:{west:'facility_lab', north:'escape_corridor'},
+    items:[], npcs:['mac_family']
+  },
+  escape_corridor:{
+    short:'ESCAPE CORRIDOR',
+    name:'Facility Escape Corridor',
+    desc:[
+      "A long corridor with a fire exit. Alarms are blaring. Everything is fine.",
+      "NORTH leads to the facility ROOF. SOUTH returns to the holding area."
+    ],
+    exits:{south:'holding_area', north:'facility_roof'},
+    items:[], npcs:[]
+  },
+  basement:{
+    short:'BASEMENT',
+    name:'Facility Basement',
+    desc:[
+      "A damp basement full of filing cabinets and, somehow, a spacecraft docking port.",
+      "Your family's SHIP is here — the government apparently relocated the whole thing.",
+      "The AIRLOCK is to the NORTH. Stairwell is UP."
+    ],
+    exits:{up:'stairwell', north:'alien_ship'},
+    items:['ship_key'], npcs:[]
+  },
+  facility_roof:{
+    short:'ROOFTOP',
+    name:'Facility Rooftop',
+    desc:[
+      "The roof. Helicopter pad. Floodlights. Searchlights sweeping.",
+      "From here you can see the whole suburb — McDonald's, the park, Maple Street.",
+      "A fire exit door leads DOWN into the escape corridor. SOUTH descends via a drainpipe to the alley."
+    ],
+    exits:{down:'escape_corridor', south:'alley'},
+    items:[], npcs:[]
+  },
+  alien_ship:{
+    short:"FAMILY'S SHIP",
+    name:"The Family Spacecraft — Interior",
+    desc:[
+      "The inside of the ship. It smells like home, which for your species is Coca-Cola and starlight.",
+      "Navigation controls glow gently. The stars wait.",
+      "USE the SHIP KEY (or type LAUNCH) when your family is aboard to escape.",
+      "SOUTH returns to the basement."
+    ],
+    exits:{south:'basement'},
+    items:[], npcs:[]
+  }
+};
+
+// ── ITEMS ─────────────────────────────────────────────────────
+function mkCoke(id){
+  return {
+    id, name:'Coca-Cola Can', short:'coke can',
+    keys:['coke','cola','can','soda','drink','coca','beverage'],
+    desc:'A Coca-Cola can. For humans: a beverage. For you: basically LIFE IN A CYLINDER.\nThe red label practically throbs with nutritional promise.',
+    portable:true,
+    onGet(){ pr('You grab the Coca-Cola. Your entire being thrills with anticipation.'); },
+    onUse(){ energize(35,'You crack the can. Fizz. Life. Everything is going to be okay. (+35 energy)'); removeFromInv(id); }
+  };
+}
+
+const items = {
+  coke1: mkCoke('coke1'),
+  coke2: mkCoke('coke2'),
+  coke3: mkCoke('coke3'),
+  coke4: mkCoke('coke4'),
+  coke5: mkCoke('coke5'),
+  coke6: mkCoke('coke6'),
+  coke7: mkCoke('coke7'),
+  coke_bonus: {
+    id:'coke_bonus', name:'Coca-Cola Six-Pack', short:'six-pack',
+    keys:['sixpack','six','pack','coke','cola','soda'],
+    desc:'A full six-pack of Coca-Cola. An alien\'s greatest treasure.\nThis is wealth. This is power. This is survival.',
+    portable:true,
+    onGet(){ pr('You clutch the six-pack. You feel invincible.','info'); },
+    onUse(){ energize(50,'You drink deeply from the six-pack. MAXIMUM LIFE. (+50 energy)'); removeFromInv('coke_bonus'); }
+  },
+  communicator:{
+    id:'communicator', name:'Alien Communicator', short:'communicator',
+    keys:['communicator','device','radio','alien','remote','scanner'],
+    desc:'A cracked alien communications device. Looks like a TV remote crossed with a sea cucumber.\nCurrently picking up: your family\'s distress signal, three radio stations, and the McDonald\'s drive-through frequency.',
+    portable:true,
+    onGet(){ pr('You grab the communicator. It beeps hopefully.','info'); addScore(10); },
+    onUse(){
+      if(!G.flags.located_family){
+        G.flags.located_family=true; addScore(15);
+        pr('The communicator crackles to life!','info');
+        blank();
+        pr('You receive your family\'s signal. They\'re at a government facility northeast of the McDonald\'s.');
+        pr('Your mother\'s nose-glow translates to: "MAC. We are in cells. Bring Coca-Cola. IMMEDIATELY."');
+        pr('Your father adds: "Also we have reorganized the cell. It is better now."');
+      } else {
+        pr('The communicator confirms your family is northeast. Your mother is still disappointed.');
+      }
+    }
+  },
+  alien_doc:{
+    id:'alien_doc', name:'Alien Document', short:'alien document',
+    keys:['document','doc','paper','alien','certificate'],
+    desc:'An alien document in a script you barely read. Rough translation:\n"CERTIFICATE OF CRASHING: This vessel has officially crashed.\nSigned, The Universe. P.S. Should have turned left at Proxima Centauri."',
+    portable:true,
+    onGet(){ pr('You take the document. Maybe useful. Maybe not. Such is the alien experience.'); },
+    onUse(){ pr('You wave the alien document at things. The things are unmoved.','dim'); }
+  },
+  vacuum_hose:{
+    id:'vacuum_hose', name:'Vacuum Cleaner Hose', short:'vacuum hose',
+    keys:['vacuum','hose','tube','pipe','cleaner'],
+    desc:'A long flexible vacuum hose discarded by the road.\nYour species has complicated mythology about vacuum cleaners. This one seems inert. For now.',
+    portable:true,
+    onGet(){ pr('You pick up the hose. Warily.'); },
+    onUse(){
+      if(G.room==='drain_ditch'){
+        pr('You use the hose to extend your reach into the underground pipe!','info');
+        pr('With creative alien physics, you squeeze through into the storm drain tunnel.');
+        G.room='storm_drain'; descRoom();
+      } else {
+        pr('You wave the vacuum hose. You feel strangely powerful. Nothing else happens.','dim');
+      }
+    }
+  },
+  alien_grass:{
+    id:'alien_grass', name:'Bundle of Alien Grass', short:'alien grass',
+    keys:['grass','bundle','alien','food','green','weeds'],
+    desc:'Dried alien grass from the crash site. Standard alien food.\nTo humans: suspicious weeds. To you: a complete nutritional meal.',
+    portable:true,
+    onGet(){ pr('You gather the alien grass. Finally, something edible.'); addScore(5); },
+    onUse(){
+      if(G.room==='holding_area' && G.flags.cells_open){
+        G.flags.family_fed=true; addScore(20);
+        pr('You pass the grass through the open cell door to your family!','info');
+        pr('"Finally," your father nose-glows. "This grass is slightly dry."');
+        pr('"Dad," you nose-glow back, "we are in a government facility."');
+        pr('"Standards," he replies, "must be maintained."');
+      } else if(G.room==='holding_area'){
+        pr('The cells are still locked. Slide the grass under the door? It\'s not wide enough.','err');
+        pr('You\'ll need to open the cells first.');
+      } else {
+        energize(15,'You eat some of the alien grass. Not bad. (+15 energy)');
+        removeFromInv('alien_grass');
+      }
+    }
+  },
+  gov_badge:{
+    id:'gov_badge', name:'Government ID Badge', short:'gov badge',
+    keys:['badge','id','government','pass','card','credentials'],
+    desc:'Dr. Wickett\'s Government Alien Investigation Unit badge.\nPhoto ID of a man who looks personally betrayed by the concept of extraterrestrial life.',
+    portable:true,
+    onGet(){ pr('You pocket the badge. Wickett\'s photo stares accusingly.','info'); addScore(10); },
+    onUse(){
+      if(G.room==='facility_ext'){
+        if(!G.flags.badge_shown){ G.flags.badge_shown=true; addScore(15); }
+        pr('You flash the badge at the guard.','info');
+        pr('GUARD: "...uh. Right. Through you go." (He\'s new.)');
+      } else {
+        pr('You flash the badge authoritatively. Nobody is here to see it.','dim');
+      }
+    }
+  },
+  facility_map:{
+    id:'facility_map', name:'Facility Floor Plan', short:'facility map',
+    keys:['map','plan','floor','facility','blueprint'],
+    desc:'A hand-drawn floor plan of the government facility.\nSomeone has circled "ALIEN STORAGE" in red and drawn a frowning alien face next to it.\nThe alien face is, frankly, relatable.',
+    portable:true,
+    onGet(){ pr('You take the map. The frowning alien face resonates deeply.'); addScore(5); },
+    onUse(){
+      pr('FACILITY MAP:','info');
+      pr('  BASEMENT: Spacecraft storage, maintenance bay');
+      pr('  FLOOR 1:  Lobby, reception (ELEVATOR UP / STAIRWELL EAST)');
+      pr('  FLOOR 2:  Research lab, ALIEN HOLDING AREA (east door)');
+      pr('  ROOF:     Emergency exit, helicopter pad');
+    }
+  },
+  mcdonalds_hat:{
+    id:'mcdonalds_hat', name:"McDonald's Paper Hat", short:"paper hat",
+    keys:['hat','cap','mcdonalds','paper','mcd','uniform'],
+    desc:"A McDonald's employee paper hat. Ronald McDonald's face grins from the brim.\nWearing this constitutes the universe's saddest disguise. And yet.",
+    portable:true,
+    onGet(){ pr("You put on the paper hat. You look ridiculous and oddly confident."); },
+    onUse(){
+      if(G.room==='mcdonalds_inside'){
+        if(!G.flags.danced){
+          G.flags.danced=true; addScore(20);
+          pr('You step onto the dance floor in your McDonald\'s hat.','info');
+          blank();
+          pr('Everyone assumes you\'re part of the entertainment.');
+          pr('You execute what your species considers "dancing" — technically a mating distress signal —');
+          pr('and it FITS PERFECTLY with the music.');
+          pr('The crowd loses their minds. You are now a McDonald\'s legend.');
+          pr('In the chaos, you slip easily through to the kitchen. Nobody notices. Nobody notices anything here.');
+        } else {
+          pr('You dance again. The crowd welcomes you back like an old friend.','dim');
+        }
+      } else {
+        pr('You adjust your McDonald\'s hat. You look like an alien who works at McDonald\'s.','dim');
+        pr('Is that better or worse? The universe doesn\'t answer.');
+      }
+    }
+  },
+  rubber_plant:{
+    id:'rubber_plant', name:'Rubber Plant (Potted)', short:'rubber plant',
+    keys:['plant','rubber','pot','potted','ficus','tree'],
+    desc:'A large rubber plant in an enormous pot. You feel a deep genetic kinship with it.\nYour species evolved to hide in plants when threatened, which is either elegant or extremely undignified.',
+    portable:false,
+    onUse(){
+      if(!G.flags.hid_plant){ G.flags.hid_plant=true; addScore(5); }
+      pr('You hide inside the rubber plant.','info');
+      pr('Janet walks through the room. Stops. Stares at the plant for a long, unnerving moment.');
+      pr('"Hm," she says quietly. "New fronds."');
+      pr('She walks away. You emerge, cautiously, with renewed faith in Earth\'s inattentiveness.');
+    }
+  },
+  mcdonalds_bag:{
+    id:'mcdonalds_bag', name:"McDonald's Takeout Bag", short:'mcdonalds bag',
+    keys:['bag','takeout','food','mcdonalds','fries','burger'],
+    desc:"A McDonald's bag: fries, hamburger, apple pie. For humans, a meal.\nFor you, it's essentially ornamental.",
+    portable:true,
+    onGet(){ pr("You grab the McDonald's bag. The fries smell incredible to humans. You note this academically."); },
+    onUse(){
+      if(!G.flags.bag_trick){
+        G.flags.bag_trick=true;
+        pr('You put the bag over your head as a disguise.','dim');
+        pr('It covers about 30% of you. You are visible in every direction.');
+        pr('And yet nobody reacts. Earth is genuinely remarkable.');
+      } else {
+        pr('You\'ve already done the bag trick. It worked both times somehow.','dim');
+      }
+    }
+  },
+  mystery_present:{
+    id:'mystery_present', name:'Mystery Present Box', short:'mystery present',
+    keys:['present','box','gift','wrapped','birthday','package'],
+    desc:"A birthday present, neatly wrapped. Tag: 'To: Whoever needs this most.'\nIt rattles slightly when you tilt it. Something is moving inside.",
+    portable:true,
+    onGet(){ pr("You pick up the mystery present. It rattles ominously."); },
+    onUse(){
+      if(!G.flags.opened_present){
+        G.flags.opened_present=true; addScore(10);
+        pr('You tear open the present!','info');
+        pr('Inside: a Coca-Cola six-pack and a handwritten note.');
+        pr('"To the alien reading this: we know you\'re out there. Stay hydrated. — A Friend"');
+        if(!G.inv.includes('coke_bonus')) G.inv.push('coke_bonus');
+      } else {
+        pr('You\'ve already opened it. It had Coca-Cola. It was an excellent present.','dim');
+      }
+    }
+  },
+  vacuum_cleaner:{
+    id:'vacuum_cleaner', name:'Vacuum Cleaner', short:'vacuum cleaner',
+    keys:['vacuum','cleaner','hoover','machine'],
+    desc:'A large upright vacuum cleaner. It hums with dormant menace.\nYour species has a complicated mythological relationship with these machines.',
+    portable:false,
+    onUse(){
+      if(!G.flags.faced_vacuum){ G.flags.faced_vacuum=true; addScore(5); }
+      pr('You stand before the vacuum cleaner.','dim');
+      pr('It faces you. You face it. An understanding passes between you.');
+      pr('You are no longer afraid of vacuum cleaners. This is personal growth.');
+    }
+  },
+  lab_notes:{
+    id:'lab_notes', name:"Dr. Wickett's Lab Notes", short:'lab notes',
+    keys:['notes','lab','notebook','journal','research','wickett'],
+    desc:"A research journal in increasingly frantic handwriting.\n" +
+         "Day 47: Aliens survive on COCA-COLA. Submitted budget request. Denied.\n" +
+         "Day 52: Submitted again. Denied again. Drinking the Coca-Cola myself now.\n" +
+         "Day 58: I don't think it works the same way.",
+    portable:true,
+    onGet(){ pr("You take Wickett's notes. Poor man."); addScore(5); },
+    onUse(){
+      if(!G.flags.read_notes){
+        G.flags.read_notes=true; G.flags.knows_code=true; addScore(10);
+        pr('You read through the notes carefully.','info');
+        blank();
+        pr('"CELL OVERRIDE: Code is MCDONALD. Entered at the holding area control panel."');
+        pr('"P.S. I have begun to suspect I am the alien in this situation." — Dr. Wickett');
+      } else {
+        pr('You\'ve read it. Override code: MCDONALD. Never forget Wickett.','dim');
+      }
+    }
+  },
+  ship_key:{
+    id:'ship_key', name:'Spacecraft Ignition Chip', short:'ship key',
+    keys:['key','chip','ignition','crystal','ship'],
+    desc:'A crystalline ignition chip for the family spacecraft.\nIt pulses with faint inner light and smells, impossibly, like home.',
+    portable:true,
+    onGet(){ pr('You pocket the ignition chip. The ship is almost ready.','info'); addScore(15); },
+    onUse(){
+      if(G.room==='alien_ship'){
+        if(G.flags.family_freed){ win(); }
+        else { pr('The ship starts up! But your family is still in their cells — go free them!','err'); }
+      } else {
+        pr('The chip pulses warmly. Soon.','dim');
+      }
+    }
+  }
+};
+
+// remove single item from inventory
+function removeFromInv(id){ G.inv = G.inv.filter(i=>i!==id); }
+
+// ── NPCS ─────────────────────────────────────────────────────
+const npcs = {
+  eric:{
+    name:'Eric (Boy in Wheelchair)', keys:['eric','boy','kid','wheelchair','child'],
+    idx:0, lines:[
+      '"MAC! MAC IS REAL! I KNEW IT!" Eric screams at the fountain.',
+      '"Do you need Coca-Cola? You always seem to need Coca-Cola."',
+      '"My family thinks I\'m making you up. I mean. Fair."',
+      '"I have a plan involving McDonald\'s. Most of my plans involve McDonald\'s."',
+      '"You\'re the least weird thing that\'s happened to me this week, honestly."'
+    ]
+  },
+  agent_henderson:{
+    name:'Agent Henderson', keys:['agent','henderson','government','man','suit','driver'],
+    idx:0, lines:[
+      '"Nothing to see here, citizen." (He is absolutely watching you.)',
+      '"I am conducting routine surveillance. Routinely. Nothing alien about it."',
+      '"WHAT IS — oh. Just a dog. I need more coffee."',
+      '"The U.S. Government has NO knowledge of extraterrestrial life. Good day."',
+      '"...is that thing getting closer? No. Just a weird kid. I need sleep."'
+    ]
+  },
+  janet:{
+    name:'Janet Webber', keys:['janet','webber','mother','woman','lady'],
+    idx:0, lines:[
+      '"Oh hello! Can I get you some Coca-Cola? We have... a LOT of Coca-Cola."',
+      '"Eric said his friend needed help. You look like Eric\'s friend."',
+      '"I don\'t ask questions in this household. It\'s a survival strategy."',
+      '"Help yourself to the kitchen! Specifically the refrigerator!"'
+    ]
+  },
+  dog:{
+    name:'The Dog', keys:['dog','animal','pet','hound'],
+    idx:0, lines:[
+      'The dog stares at you. It knows.',
+      'The dog whines softly, then covers its eyes with one paw.',
+      'The dog brings you a tennis ball. You are genuinely moved.',
+      '"Bork," says the dog. In dog: "I accept you, space creature."'
+    ]
+  },
+  ronald:{
+    name:'Ronald McDonald', keys:['ronald','clown','mascot','employee'],
+    idx:0, lines:[
+      '"BA DA BA BA BAAA — I\'m lovin\' it!" Ronald gestures for you to join the dance.',
+      '"All are welcome at McDonald\'s. ALL."',
+      'Ronald does a cartwheel. It is technically impressive.',
+      '"Have you tried the Coca-Cola? It pairs beautifully with everything."'
+    ]
+  },
+  crowd:{
+    name:'Dancing Customers', keys:['crowd','customers','people','dancers','humans','everyone'],
+    idx:0, lines:[
+      'The crowd cheers. They accept all dancers here.',
+      '"YEAH! WOOO!" screams a man in a polo shirt. He means it.',
+      'A grandmother executes an aggressive moonwalk. Nobody questions it.',
+      'Everyone is having the time of their lives. At a McDonald\'s. Somehow.'
+    ]
+  },
+  guard:{
+    name:'Facility Guard', keys:['guard','security','officer'],
+    idx:0,
+    onTalk(){
+      if(!G.flags.badge_shown){
+        pr('GUARD: "BADGE. I need to see a badge. You look like you don\'t have a badge."','warn');
+        pr('(HINT: Find a government badge and USE it at this location.)');
+      } else {
+        pr('GUARD: "You\'re cleared. Go ahead." He waves you through without eye contact.','dim');
+      }
+    }
+  },
+  receptionist:{
+    name:'Receptionist', keys:['receptionist','desk','secretary','clerk'],
+    idx:0, lines:[
+      '"Can I help you? Do you have an appointment? You look... different."',
+      '"Please sign in. Legal name only. Or whatever you have."',
+      '"Floor 2 is Research. Basement is restricted. Elevator\'s on the left."',
+      '"Have a good day. You\'re my first alien. That I\'m aware of."'
+    ]
+  },
+  wickett:{
+    name:'Dr. Wickett', keys:['wickett','doctor','dr','scientist','researcher','man'],
+    idx:0,
+    onTalk(){
+      if(!G.flags.wickett_helped){
+        G.flags.wickett_helped=true; G.flags.knows_code=true; addScore(10);
+        pr('Dr. Wickett spins around dramatically.','info');
+        blank();
+        pr('"YOU! You\'re REAL! I\'ve been telling them for YEARS! YEARS!"');
+        pr('"Your family — they\'re in the holding area. East door. Override code: MCDONALD."');
+        pr('"I named the code. McDonald\'s is important to me. Don\'t judge."');
+        pr('"Now GO before Henderson gets back. I\'ll stall them. I\'ll tell them it was a raccoon again."');
+        pr('(He\'s told them about the raccoon seventeen times.)','dim');
+      } else {
+        pr('Dr. Wickett: "GO! EAST DOOR! MCDONALD! WHAT ARE YOU DOING STILL HERE?!"','warn');
+      }
+    }
+  },
+  mac_family:{
+    name:"MAC's Family", keys:['family','parents','siblings','aliens','mother','father','mom','dad','kin'],
+    idx:0,
+    onTalk(){
+      if(!G.flags.cells_open){
+        pr('Your family communicates through the reinforced glass via nose-glow.','info');
+        blank();
+        pr('"MAC. We are LOCKED IN. The PANEL on the wall has the override code."');
+        pr('Your mother adds: "Also — is that a McDonald\'s hat?"');
+        pr('It is. You say nothing. Nose-glow says everything.');
+      } else {
+        pr('Your family is FREE! They gather around you.','info');
+        pr('"We must go to the ship immediately," says your father, with alien gravitas.');
+        pr('"Yes," your mother agrees. "And we will not speak of this EVER again."');
+        pr('"We will absolutely speak of this again," says your sibling.');
+      }
+    }
+  }
+};
+
+// ── ROOM DESCRIPTIONS ─────────────────────────────────────────
+function descRoom(){
+  const r = rooms[G.room];
+  if(!r){ pr('ERROR: Invalid room.','err'); return; }
+  blank();
+  pr('[ ' + r.name.toUpperCase() + ' ]','info');
+  blank();
+  r.desc.forEach(l=>pr(l));
+
+  // items in room (not in inv)
+  const vis = (r.items||[]).filter(id=>!G.inv.includes(id) && items[id]);
+  if(vis.length>0){
+    blank();
+    pr('You see: '+vis.map(id=>items[id].name).join(', ')+'.','dim');
+  }
+
+  // npcs
+  const here = (r.npcs||[]).filter(id=>!G.flags['gone_'+id]);
+  if(here.length>0){
+    blank();
+    pr('Also here: '+here.map(id=>npcs[id]?.name||id).join(', ')+'.','dim');
+  }
+
+  // exits
+  const ex = Object.keys(r.exits||{});
+  if(ex.length>0){
+    blank();
+    pr('Exits: '+ex.map(e=>e.toUpperCase()).join(', ')+'.','dim');
+  }
+  updateHUD();
+}
+
+// ── ITEM FINDERS ──────────────────────────────────────────────
+function matchItem(target, list){
+  return list.find(id=>{
+    const it=items[id];
+    if(!it) return false;
+    return it.keys?.some(k=>target.includes(k)) ||
+           target.includes(it.short||'') ||
+           (it.name||'').toLowerCase().includes(target);
+  });
+}
+function inRoom(target){
+  const r=rooms[G.room];
+  const vis=(r.items||[]).filter(id=>!G.inv.includes(id)&&items[id]);
+  return matchItem(target,vis);
+}
+function inInv(target){ return matchItem(target, G.inv); }
+
+// ── PARSER ────────────────────────────────────────────────────
+const history=[];
+let histIdx=-1;
+
+cmdEl.addEventListener('keydown', e=>{
+  if(e.key==='Enter'){
+    const v=cmdEl.value.trim();
+    cmdEl.value='';
+    if(!v) return;
+    history.unshift(v); histIdx=-1;
+    parse(v);
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    histIdx=Math.min(histIdx+1, history.length-1);
+    if(history[histIdx]) cmdEl.value=history[histIdx];
+  } else if(e.key==='ArrowDown'){
+    e.preventDefault();
+    histIdx=Math.max(histIdx-1,-1);
+    cmdEl.value=histIdx>=0?history[histIdx]:'';
+  }
+});
+
+function parse(raw){
+  if(G.over){ pr('Game over. Type NEW to restart.','warn'); return; }
+  echo(raw);
+  G.moves++;
+  if(G.moves%8===0) drain(5);
+  updateHUD();
+
+  const words = raw.toLowerCase().replace(/[^a-z0-9\s]/g,'').trim().split(/\s+/);
+  const v = words[0];
+  const rest = words.slice(1).join(' ');
+
+  const DIR_MAP={
+    n:'north',s:'south',e:'east',w:'west',u:'up',d:'down',
+    ne:'northeast',nw:'northwest',se:'southeast',sw:'southwest',
+    north:'north',south:'south',east:'east',west:'west',up:'up',down:'down',
+    northeast:'northeast',northwest:'northwest',southeast:'southeast',southwest:'southwest',
+    underground:'underground',inside:'north',outside:'south',in:'north',out:'south'
+  };
+
+  if(DIR_MAP[v]) return go(DIR_MAP[v]);
+
+  switch(v){
+    case 'go': case 'walk': case 'run': case 'move': case 'travel': case 'head':
+      return go(rest);
+    case 'climb':
+      if(rest.includes('up')||rest===''||rest.includes('out')) return go('up');
+      if(rest.includes('down')||rest.includes('rope')) return go('down');
+      return go('up');
+    case 'enter': return go(rest.includes('ship')?'north':rest||'north');
+
+    case 'look': case 'l':
+      if(!rest||rest==='around'||rest==='room') return descRoom();
+      return examine(rest);
+    case 'examine': case 'x': case 'ex': case 'inspect': case 'check': case 'read':
+      return examine(rest);
+
+    case 'get': case 'take': case 'grab': case 'pick':
+      return getItem(rest.replace(/^up\s*/,''));
+    case 'drop': case 'discard': return dropItem(rest);
+    case 'use': case 'drink': case 'eat': case 'activate': case 'open':
+      return useItem(rest);
+
+    case 'inventory': case 'i': case 'inv': case 'items': case 'bag': case 'carry':
+      return showInv();
+
+    case 'talk': case 'speak': case 'ask': case 'greet': case 'chat': case 'say': case 'tell':
+      return talkTo(rest.replace(/^to\s*/,''));
+
+    case 'dance':
+      return tryDance();
+    case 'hide':
+      return tryHide();
+    case 'launch': case 'fly': case 'blast': case 'liftoff': case 'takeoff':
+      return launchShip();
+    case 'override': case 'code': case 'unlock': case 'release':
+      return openCells();
+    case 'wait': case 'z':
+      pr('Time passes. Your nose glows thoughtfully.','dim');
+      drain(2);
+      return;
+    case 'score': case 'status':
+      pr('Score: '+G.score+' | Moves: '+G.moves+' | Energy: '+G.energy+'%'); return;
+    case 'help': case '?': case 'commands':
+      return showHelp();
+    case 'new': case 'restart': case 'reset': case 'again':
+      return initGame();
+    default:
+      pr('I don\'t understand "'+v+'". Type HELP for commands.','err');
+  }
+}
+
+function go(dir){
+  dir=dir.trim().toLowerCase();
+  const r=rooms[G.room];
+  const dest=r?.exits?.[dir];
+  if(!dest){ pr("You can't go "+dir.toUpperCase()+" from here.",'err'); return; }
+
+  // Gate: facility guard
+  if(dest==='facility_lobby' && !G.flags.badge_shown){
+    pr('The guard steps in your path.','err');
+    pr('GUARD: "BADGE. Show me a badge. You look extremely unbadged."');
+    pr('(Find a government badge and USE it here first.)');
+    return;
+  }
+
+  G.room=dest;
+  blank();
+  descRoom();
+}
+
+function getItem(target){
+  if(!target){ pr('Get what?','err'); return; }
+  const id=inRoom(target);
+  if(!id){ pr('"'+target+'" isn\'t here.','err'); return; }
+  const it=items[id];
+  if(!it.portable){ pr("You can't take that.",'err'); return; }
+  if(G.inv.includes(id)){ pr("You already have that.",'dim'); return; }
+  G.inv.push(id);
+  rooms[G.room].items=(rooms[G.room].items||[]).filter(x=>x!==id);
+  if(it.onGet) it.onGet();
+  else pr('Taken.','info');
+  updateHUD();
+}
+
+function dropItem(target){
+  if(!target){ pr('Drop what?','err'); return; }
+  const id=inInv(target);
+  if(!id){ pr("You're not carrying that.",'err'); return; }
+  G.inv=G.inv.filter(x=>x!==id);
+  rooms[G.room].items=rooms[G.room].items||[];
+  rooms[G.room].items.push(id);
+  pr('Dropped.','dim');
+}
+
+function useItem(target){
+  if(!target){ pr('Use what?','err'); return; }
+  let id=inInv(target);
+  if(!id) id=inRoom(target);
+  if(!id){ pr("You don't have or see that.",'err'); return; }
+  const it=items[id];
+  if(it?.onUse) it.onUse();
+  else pr("You can't use that right now.",'dim');
+}
+
+function examine(target){
+  if(!target){ descRoom(); return; }
+  let id=inInv(target)||inRoom(target);
+  if(id){ blank(); pr(items[id].desc); return; }
+  // check npcs
+  const r=rooms[G.room];
+  for(const nid of (r.npcs||[])){
+    const n=npcs[nid];
+    if(n?.keys?.some(k=>target.includes(k))){
+      pr('You examine '+n.name+'.','dim'); return;
+    }
+  }
+  // room features
+  if(['sign','poster','wall','door','window','furniture'].some(k=>target.includes(k))){
+    pr('Just part of the scenery. Probably irrelevant. Probably.','dim'); return;
+  }
+  pr("You don't see anything special.",'dim');
+}
+
+function talkTo(target){
+  if(!target){ pr('Talk to whom?','err'); return; }
+  const r=rooms[G.room];
+  for(const nid of (r.npcs||[])){
+    const n=npcs[nid];
+    if(!n) continue;
+    if(n.keys?.some(k=>target.includes(k))||target.includes((n.name||'').toLowerCase())){
+      blank();
+      if(n.onTalk){ n.onTalk(); return; }
+      pr(n.name+': '+n.lines[n.idx%n.lines.length],'info');
+      n.idx++;
+      return;
+    }
+  }
+  pr('There\'s nobody called "'+target+'" here.','err');
+}
+
+function showInv(){
+  if(G.inv.length===0){
+    pr("You're carrying nothing. Just your alien dignity, which weighs nothing.",'dim'); return;
+  }
+  blank();
+  pr('INVENTORY:','info');
+  const seen={};
+  G.inv.forEach(id=>{
+    const n=items[id]?.name||id;
+    seen[n]=(seen[n]||0)+1;
+  });
+  Object.entries(seen).forEach(([n,c])=>{
+    pr('  - '+n+(c>1?' (x'+c+')':''));
+  });
+}
+
+function openCells(){
+  if(G.room!=='holding_area'){ pr("There are no cell controls here.",'err'); return; }
+  if(!G.flags.knows_code){
+    pr("The control panel has a code entry. You don't know the override code.",'err');
+    pr("(Hint: find someone in the facility who might know the security codes.)");
+    return;
+  }
+  if(G.flags.cells_open){ pr("The cells are already open!",'dim'); return; }
+  G.flags.cells_open=true; addScore(30);
+  pr('You enter the override code: M-C-D-O-N-A-L-D.','info');
+  pr('The cell doors HISS open with dramatic government pneumatics.');
+  blank();
+  pr('Your family spills out, blinking in the fluorescent light.');
+  pr('"Finally," says your mother. "Also — is that a McDonald\'s hat?"');
+  pr('"It is a long story," you nose-glow.');
+  pr('"It is always a long story," she replies.');
+  G.flags.family_freed=true;
+}
+
+function tryDance(){
+  if(G.room==='mcdonalds_inside'){
+    if(G.inv.includes('mcdonalds_hat')||G.flags.danced){
+      if(!G.flags.danced){
+        G.flags.danced=true; addScore(20);
+        pr('You step onto the floor in your McDonald\'s hat and DANCE.','info');
+        blank();
+        pr('Your alien dance moves — technically a biological distress signal — fit PERFECTLY.');
+        pr('The crowd erupts. You are now a McDonald\'s birthday party legend.');
+        pr('In the euphoria, you slip through to the kitchen unnoticed.');
+      } else {
+        pr('You return to the dance floor. The crowd welcomes you back like a returning hero.','dim');
+      }
+    } else {
+      pr('You attempt to dance. Without the hat, people just stare.','dim');
+      pr('"Sir," says someone, "this is a McDonald\'s."');
+      pr('It is a McDonald\'s. That\'s exactly the problem.');
+    }
+  } else {
+    pr('You dance. There\'s nobody watching, but you feel good about it.','dim');
+  }
+}
+
+function tryHide(){
+  if(G.room==='webber_living'){
+    if(!G.flags.hid_plant){ G.flags.hid_plant=true; addScore(5); }
+    pr('You hide inside the rubber plant.','info');
+    pr('Janet wanders through, stops, narrows her eyes at the plant.');
+    pr('"Hm. New fronds." She walks away.');
+    pr('You emerge, restored. Earth\'s inattentiveness is your greatest ally.');
+  } else {
+    pr("There's nowhere good to hide here.",'dim');
+  }
+}
+
+function launchShip(){
+  if(G.room!=='alien_ship'){ pr("You're not in the ship.",'err'); return; }
+  if(!G.inv.includes('ship_key')){ pr("The ship needs its ignition chip. (Find the SHIP KEY.)",'err'); return; }
+  if(!G.flags.family_freed){ pr("Your FAMILY is still in their cells! Free them first!",'err'); return; }
+  win();
+}
+
+// ── WIN / LOSE ─────────────────────────────────────────────────
+function win(){
+  G.over=true; G.won=true; addScore(100);
+  blank(); sep();
+  pr('★  ★  ★   Y O U   W I N   ★  ★  ★','head');
+  sep(); blank();
+  pr('The spacecraft hums to life. The ignition chip finds its slot.');
+  pr('Your family buckles in with the dignity of beings who have DEFINITELY done this before.');
+  blank();
+  pr('The ship rises — through the basement ceiling (it just goes through it),');
+  pr('through the facility roof, through the floodlights, and into the night sky.');
+  blank();
+  pr('Below, you see: the McDonald\'s, the park, Maple Street,');
+  pr('Eric waving furiously from his wheelchair,');
+  pr('Dr. Wickett dancing alone in the parking lot,');
+  pr('Agent Henderson chasing the van that has somehow started itself,');
+  pr('and Janet Webber, who has noticed nothing unusual, watering her rubber plant.');
+  blank();
+  pr('"We should not return," says your father.');
+  pr('"Agreed," says your mother.');
+  pr('"Can we do the McDonald\'s drive-through on the way out?" asks your sibling.');
+  pr('There is a long silence.','dim');
+  pr('"...One drive-through," your mother says.','info');
+  blank(); sep();
+  pr('FINAL SCORE: '+G.score+' points in '+G.moves+' moves.','info');
+  pr('THANK YOU FOR PLAYING.','dim');
+  pr('IN LOVING MEMORY OF REAL ALIENS, WHEREVER YOU ARE.','dim');
+  sep(); blank();
+  pr('Type NEW to play again.','dim');
+  updateHUD();
+}
+
+function gameOver(msg){
+  G.over=true;
+  blank(); sep();
+  pr('☠   G A M E   O V E R   ☠','err');
+  sep(); blank();
+  msg.split('\n').forEach(l=>pr(l,'err'));
+  blank();
+  pr('Score: '+G.score+' in '+G.moves+' moves.','dim');
+  pr('Type NEW to try again.','dim');
+  sep();
+}
+
+// ── HELP ──────────────────────────────────────────────────────
+function showHelp(){
+  blank();
+  pr('══ COMMANDS ══════════════════════════════════════','info');
+  pr('MOVEMENT : N S E W U D NE NW SE SW UNDERGROUND');
+  pr('LOOK     : L or LOOK — describe current location');
+  pr('EXAMINE  : X <thing> — look closely at something');
+  pr('GET      : GET <item> — pick up an item');
+  pr('DROP     : DROP <item>');
+  pr('USE      : USE <item> — use, drink, eat, activate');
+  pr('TALK     : TALK TO <person> — speak to someone');
+  pr('INVENTORY: I — list carried items');
+  pr('DANCE    : DANCE — know when to use this');
+  pr('HIDE     : HIDE — near plants');
+  pr('OPEN     : OPEN CELLS / OVERRIDE — cell release');
+  pr('LAUNCH   : LAUNCH — when in the ship');
+  pr('SCORE    : SCORE — current score and stats');
+  pr('NEW      : NEW — restart game');
+  blank();
+  pr('TIPS:','warn');
+  pr('  ★ Drink Coca-Cola to maintain energy (critical mechanic)');
+  pr('  ★ Talk to everyone — NPCs share vital info');
+  pr('  ★ Use the COMMUNICATOR early');
+  pr('  ★ The McDonald\'s hat is more useful than it looks');
+  pr('  ★ Read everything you pick up');
+}
+
+// ── INTRO + INIT ──────────────────────────────────────────────
+function initGame(){
+  // Reset
+  Object.assign(G,{room:'crash_site',inv:[],flags:{},energy:100,score:0,moves:0,over:false,won:false});
+  // Restore item lists to rooms (in case of restart)
+  rooms.crash_site.items=['coke1'];
+  rooms.crash_debris.items=['communicator','alien_doc'];
+  rooms.desert_road.items=['vacuum_hose'];
+  rooms.drain_ditch.items=['coke2'];
+  rooms.park.items=['alien_grass'];
+  rooms.picnic_area.items=['coke3','mcdonalds_bag'];
+  rooms.webber_living.items=['rubber_plant'];
+  rooms.webber_kitchen.items=['coke4','coke5'];
+  rooms.webber_garage.items=['vacuum_cleaner','coke6'];
+  rooms.mcdonalds_lot.items=['mcdonalds_hat'];
+  rooms.mcdonalds_kitchen.items=['coke7'];
+  rooms.party_room.items=['mystery_present'];
+  rooms.gov_van.items=['gov_badge','facility_map'];
+  rooms.facility_lab.items=['lab_notes'];
+  rooms.basement.items=['ship_key'];
+  // Reset NPC indexes
+  Object.values(npcs).forEach(n=>{ if(n.idx!==undefined) n.idx=0; });
+
+  out.innerHTML='';
+  sep();
+  pr('','head');
+  pr('  M A C   A N D   M E','head');
+  pr('  A Text Adventure','head');
+  pr('');
+  pr('  Based on the 1988 film nobody asked for,','dim');
+  pr('  everybody forgot, and one alien endured.','dim');
+  sep();
+  blank();
+  pr('You are MAC. Mysterious Alien Creature.');
+  pr('You look like a small being in a rubber suit, because that is what you look like.');
+  pr('Your nose glows. Your eyes are large. You love Coca-Cola with your entire alien soul.');
+  blank();
+  pr('Your family\'s spacecraft has just crashed in the Mojave Desert.');
+  pr('Your family is GONE — almost certainly captured by government agents');
+  pr('who mean well but are profoundly inconvenient.');
+  blank();
+  pr('MISSION: Find your family. Stay alive. Get home.','info');
+  pr('WARNING: You run on Coca-Cola. Do not run out.','warn');
+  blank();
+  pr('Type HELP for commands. Type LOOK to see your surroundings.','dim');
+  sep();
+  blank();
+  descRoom();
+  updateHUD();
+}
+
+initGame();
+</script>
+</body>
+</html>
