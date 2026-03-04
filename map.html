@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MAC AND ME — Room Map</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#020c02; display:flex; flex-direction:column; align-items:center;
+       padding:20px; font-family:'VT323',monospace; min-height:100vh; }
+h1 { color:#00ff41; font-size:1.9rem; letter-spacing:.4rem; margin-bottom:6px; }
+p  { color:#336633; font-size:.85rem; font-family:monospace; margin-bottom:14px; }
+.wrap { overflow:auto; max-width:98vw; border:1px solid #002200; background:#020c02;
+        border-radius:4px; padding:8px; }
+</style>
+</head>
+<body>
+<h1>MAC AND ME — ROOM MAP</h1>
+<p>29 rooms · dashed lines = connections · labels show game exit directions · S→ = one-way</p>
+<div class="wrap"><canvas id="c"></canvas></div>
+<script>
+// ── Setup ─────────────────────────────────────────────────────
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+cv.width = 975; cv.height = 870;
+
+const BW = 110, BH = 36;
+
+// ── roundRect (hoisted via function declaration) ──────────────
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h); ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// ── Room definitions ──────────────────────────────────────────
+// x,y = top-left. bw = box width (default BW). lbl = display name. sub = exits summary.
+const R = {
+  // GOVT FACILITY — TOP
+  alien_ship:        { x:15,  y:28,  lbl:'ALIEN SHIP',         sub:'N↔S:basement'             },
+  basement:          { x:145, y:28,  lbl:'BASEMENT',            sub:'N:ship · U:stair'          },
+  stairwell:         { x:275, y:28,  lbl:'STAIRWELL',           sub:'D:base · U:lobby'          },
+  facility_roof:     { x:555, y:28,  lbl:'FAC. ROOF',           sub:'S→alley · D:escape'        },
+  // FACILITY FLOOR 2
+  facility_lab:      { x:15,  y:112, lbl:'RESEARCH LAB',        sub:'D:lobby · E:holding'       },
+  holding_area:      { x:145, y:112, lbl:'HOLDING AREA',        sub:'W:lab · N:escape'          },
+  escape_corridor:   { x:415, y:112, lbl:'ESCAPE CORRIDOR',     sub:'S:holding · N:roof'        },
+  // FACILITY FLOOR 1
+  facility_lobby:    { x:275, y:197, lbl:'FAC. LOBBY',          sub:'S:ext · U:lab · E:stair',  bw:130 },
+  // EXTERIOR / STREET LEVEL
+  facility_ext:      { x:430, y:283, lbl:'FAC. EXTERIOR',       sub:'N:lobby · S:alley'         },
+  party_room:        { x:275, y:283, lbl:'PARTY ROOM',          sub:'S:inside'                  },
+  // McDONALDS
+  mcdonalds_inside:  { x:275, y:368, lbl:"McDON'S INSIDE",      sub:'N:party·E:kitch·S:lot',    bw:120 },
+  mcdonalds_kitchen: { x:415, y:368, lbl:"McDON'S KITCHEN",     sub:'W:inside · E:alley',       bw:120 },
+  alley:             { x:555, y:368, lbl:'ALLEY',               sub:'W:kitch · N:fac.ext'       },
+  mcdonalds_lot:     { x:275, y:453, lbl:"McDON'S LOT",         sub:'N:inside · S:suburb',      bw:120 },
+  // MID-LEVEL
+  webber_kitchen:    { x:695, y:453, lbl:'WEBBER KITCHEN',      sub:'S:living · E:back',        bw:120 },
+  gov_van:           { x:835, y:453, lbl:'GOV VAN',             sub:'SW:suburb'                 },
+  // SUBURB LEVEL
+  drain_ditch:       { x:10,  y:538, lbl:'DRAIN DITCH',         sub:'E:road · UNDR:storm'       },
+  desert_road:       { x:140, y:538, lbl:'DESERT ROAD',         sub:'N→sub·S:crash·W:ditch',    bw:120 },
+  suburb_street:     { x:280, y:538, lbl:'MAPLE STREET',        sub:'N:mcd·S:park·E:yard·NE:van', bw:130 },
+  webber_yard:       { x:430, y:538, lbl:'WEBBER YARD',         sub:'W:suburb · E:living'       },
+  webber_living:     { x:560, y:538, lbl:'WEBBER LIVING',       sub:'E:yard·N:kitch·W:garage',  bw:120 },
+  webber_back:       { x:840, y:538, lbl:'WEBBER BACK',         sub:'W:kitchen · S:park'        },
+  // PARK LEVEL
+  park:              { x:280, y:623, lbl:'PARK',                sub:'N:suburb·E:picnic·S:outlet' },
+  picnic_area:       { x:415, y:623, lbl:'PICNIC AREA',         sub:'W:park'                    },
+  webber_garage:     { x:560, y:623, lbl:'WEBBER GARAGE',       sub:'E:living  (W in-game)'     },
+  // DRAIN LEVEL
+  storm_drain:       { x:10,  y:708, lbl:'STORM DRAIN',         sub:'E:outlet · U:ditch'        },
+  drain_outlet:      { x:140, y:708, lbl:'DRAIN OUTLET',        sub:'W:storm · U:park'          },
+  // CRASH LEVEL
+  crash_site:        { x:140, y:798, lbl:'CRASH SITE',          sub:'N:road · E:debris'         },
+  crash_debris:      { x:275, y:798, lbl:'CRASH DEBRIS',        sub:'W:site'                    },
+};
+
+// Helper: centre point of a room
+function ctr(id) {
+  const r = R[id];
+  return { x: r.x + (r.bw || BW) / 2, y: r.y + BH / 2 };
+}
+
+// ── Connections ───────────────────────────────────────────────
+const CONN = [
+  ['alien_ship',       'basement',          'N/S'         ],
+  ['basement',         'stairwell',         'U/D'         ],
+  ['stairwell',        'facility_lobby',    'U/D'         ],
+  ['facility_lobby',   'facility_lab',      'U/D'         ],
+  ['facility_lab',     'holding_area',      'E/W'         ],
+  ['holding_area',     'escape_corridor',   'N/S'         ],
+  ['escape_corridor',  'facility_roof',     'N/S'         ],
+  ['facility_roof',    'alley',             'S→'          ],
+  ['facility_lobby',   'facility_ext',      'S/N'         ],
+  ['facility_ext',     'alley',             'N/S'         ],
+  ['alley',            'mcdonalds_kitchen', 'W/E'         ],
+  ['mcdonalds_kitchen','mcdonalds_inside',  'W/E'         ],
+  ['mcdonalds_inside', 'party_room',        'N/S'         ],
+  ['mcdonalds_inside', 'mcdonalds_lot',     'N/S'         ],
+  ['mcdonalds_lot',    'suburb_street',     'N/S'         ],
+  ['suburb_street',    'gov_van',           'NE/SW'       ],
+  ['suburb_street',    'webber_yard',       'E/W'         ],
+  ['suburb_street',    'park',              'S/N'         ],
+  ['webber_yard',      'webber_living',     'E/W'         ],
+  ['webber_living',    'webber_kitchen',    'N/S'         ],
+  ['webber_living',    'webber_garage',     'W→(below)'   ],
+  ['webber_kitchen',   'webber_back',       'E/W'         ],
+  ['webber_back',      'park',              'S→'          ],
+  ['park',             'picnic_area',       'E/W'         ],
+  ['park',             'drain_outlet',      'S/U'         ],
+  ['drain_outlet',     'storm_drain',       'W/E'         ],
+  ['storm_drain',      'drain_ditch',       'U/UNDR'      ],
+  ['drain_ditch',      'desert_road',       'E/W'         ],
+  ['desert_road',      'suburb_street',     'N→(1-way)'   ],
+  ['desert_road',      'crash_site',        'N/S'         ],
+  ['crash_site',       'crash_debris',      'E/W'         ],
+];
+
+// ── Draw background ───────────────────────────────────────────
+ctx.fillStyle = '#020c02';
+ctx.fillRect(0, 0, cv.width, cv.height);
+
+// ── Zone helper ───────────────────────────────────────────────
+function zone(x, y, w, h, label, col) {
+  ctx.fillStyle = col;
+  ctx.strokeStyle = '#001800'; ctx.lineWidth = 1;
+  rr(x, y, w, h, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#001a00'; ctx.font = '10px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('[ ' + label + ' ]', x + 6, y + 4);
+}
+
+zone(5,   5,  550, 168, 'GOVERNMENT FACILITY', 'rgba(0,24,5,0.55)');
+zone(540, 5,  425,  96, 'FACILITY ROOF',        'rgba(0,22,5,0.5)' );
+zone(5,  180, 400, 128, 'FACILITY — FLOOR 2',   'rgba(0,20,4,0.5)' );
+zone(255,265, 440, 226, "McDONALD'S",            'rgba(0,15,2,0.5)' );
+zone(820,435, 145, 115, 'GOV. VAN',              'rgba(0,14,2,0.5)' );
+zone(545,435, 270, 115, 'WEBBER NORTH WING',     'rgba(0,12,2,0.45)');
+zone(545,520, 420, 150, 'WEBBER HOUSE',          'rgba(0,12,2,0.45)');
+zone(260,605, 310,  60, 'PARK',                  'rgba(0,15,3,0.5)' );
+zone(5,  520, 145, 260, 'DRAINAGE',              'rgba(0,10,0,0.5)' );
+zone(130,778, 280,  80, 'DESERT / CRASH',        'rgba(5,7,0,0.5)'  );
+
+// ── Draw connections ──────────────────────────────────────────
+ctx.setLineDash([4, 5]);
+ctx.lineWidth = 1.5;
+
+CONN.forEach(function([id1, id2, lbl]) {
+  const a = ctr(id1), b = ctr(id2);
+  ctx.strokeStyle = '#005500';
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+
+  // Mid-point label
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  ctx.font = 'bold 8px monospace';
+  const tw = ctx.measureText(lbl).width;
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(2,12,2,0.92)';
+  ctx.fillRect(mx - tw / 2 - 2, my - 7, tw + 4, 14);
+  ctx.fillStyle = '#006600';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(lbl, mx, my);
+  ctx.setLineDash([4, 5]);
+});
+
+ctx.setLineDash([]);
+
+// ── Draw rooms ────────────────────────────────────────────────
+Object.keys(R).forEach(function(id) {
+  const r = R[id];
+  const bw = r.bw || BW;
+
+  // Drop shadow
+  ctx.fillStyle = 'rgba(0,60,0,0.18)';
+  rr(r.x + 2, r.y + 2, bw, BH, 3); ctx.fill();
+
+  // Box fill
+  ctx.fillStyle = '#001200';
+  rr(r.x, r.y, bw, BH, 3); ctx.fill();
+
+  // Border
+  ctx.strokeStyle = '#00bb30'; ctx.lineWidth = 1.5;
+  rr(r.x, r.y, bw, BH, 3); ctx.stroke();
+
+  // Room name
+  ctx.fillStyle = '#00ff41';
+  ctx.font = 'bold 9.5px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(r.lbl, r.x + bw / 2, r.y + 11);
+
+  // Exits summary
+  ctx.fillStyle = '#336633';
+  ctx.font = '7.5px monospace';
+  ctx.fillText(r.sub, r.x + bw / 2, r.y + 25);
+});
+
+// ── Legend ────────────────────────────────────────────────────
+const lx = cv.width - 195, ly = cv.height - 68;
+ctx.fillStyle = '#001400'; ctx.strokeStyle = '#003300'; ctx.lineWidth = 1;
+rr(lx, ly, 188, 62, 4); ctx.fill(); ctx.stroke();
+ctx.fillStyle = '#448844'; ctx.font = 'bold 9px monospace';
+ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+ctx.fillText('LEGEND', lx + 6, ly + 6);
+ctx.setLineDash([4, 5]); ctx.strokeStyle = '#005500'; ctx.lineWidth = 1.5;
+ctx.beginPath(); ctx.moveTo(lx + 6, ly + 24); ctx.lineTo(lx + 50, ly + 24); ctx.stroke();
+ctx.setLineDash([]);
+ctx.fillStyle = '#336633'; ctx.font = '8px monospace';
+ctx.fillText('room connection', lx + 54, ly + 20);
+ctx.fillText('N/S/E/W = exit direction', lx + 6, ly + 36);
+ctx.fillText('U/D = up/down (stairs/ladders)', lx + 6, ly + 48);
+</script>
+</body>
+</html>
